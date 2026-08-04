@@ -1,0 +1,133 @@
+name: 雨云自动签到
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # 北京时间 12:00
+  workflow_dispatch:
+
+jobs:
+  signin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libnss3 \
+            libnspr4 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libcups2t64 \
+            libdrm2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            libpangoft2-1.0-0 \
+            libcairo2 \
+            libasound2t64 \
+            libatspi2.0-0t64 \
+            fonts-noto-cjk \
+            xvfb \
+            curl
+          echo "System deps installed"
+
+      - name: Install Google Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+
+      - name: Install ChromeDriver
+        run: |
+          CHROME_VER=$(google-chrome --version | awk '{print $3}' | cut -d. -f1)
+          echo "Chrome major: $CHROME_VER"
+          DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}.0.7049.84/linux64/chromedriver-linux64.zip"
+          wget -q "$DRIVER_URL" -O chromedriver.zip || \
+          wget -q "https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.92/linux64/chromedriver-linux64.zip" -O chromedriver.zip
+          unzip -o chromedriver.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
+          sudo chmod +x /usr/local/bin/chromedriver
+          chromedriver --version
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install opencv-python-headless
+          python -c "import cv2, selenium, ddddocr; print(f'OpenCV {cv2.__version__} / Selenium {selenium.__version__} / ddddocr OK')"
+
+      - name: Verify scripts
+        run: |
+          python -c "import ast; ast.parse(open('rainyun_signin.py').read()); print('rainyun_signin.py: OK')"
+          python -c "import ast; ast.parse(open('ICR.py').read()); print('ICR.py: OK')"
+          python -c "import ast; ast.parse(open('notify.py').read()); print('notify.py: OK')"
+
+      - name: Check stealth.min.js
+        run: |
+          if [ -f stealth.min.js ]; then
+            echo "stealth.min.js: $(wc -c < stealth.min.js) bytes"
+          else
+            echo "stealth.min.js missing, downloading..."
+            wget -q "https://raw.githubusercontent.com/berstend/puppeteer-extra/master/packages/puppeteer-extra-plugin-stealth/evasions/__shared/stealth.min.js" -O stealth.min.js 2>/dev/null || echo "download failed, will use fallback"
+            ls -la stealth.min.js 2>/dev/null || echo "no stealth.js available"
+          fi
+
+      - name: Create accounts directory
+        env:
+          RAINYUN_USER: \${{ secrets.RAINYUN_USER }}
+          RAINYUN_PASS: \${{ secrets.RAINYUN_PASS }}
+        run: |
+          mkdir -p accounts
+          if [ -n "$RAINYUN_USER" ] && [ -n "$RAINYUN_PASS" ]; then
+            cat > accounts/default.env << EOF
+username: $RAINYUN_USER
+password: $RAINYUN_PASS
+EOF
+            echo "accounts/default.env created"
+          else
+            echo "WARNING: RAINYUN_USER/RAINYUN_PASS not set in Secrets"
+          fi
+
+      - name: Run sign-in
+        env:
+          HEADLESS: "true"
+          MAX_RETRIES: "3"
+          MAX_WORKERS: "1"
+          MAX_DELAY: "10"
+          DISPLAY: ":99"
+          PROXY_SERVER: \${{ secrets.PROXY_SERVER }}
+          PROXY_USER: \${{ secrets.PROXY_USER }}
+          PROXY_PASS: \${{ secrets.PROXY_PASS }}
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          mkdir -p temp cookies
+          python rainyun_signin.py 2>&1 | tee login.log
+          echo "---LAST 30 LINES---"
+          tail -30 login.log
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-logs
+          path: |
+            login.log
+            temp/
+            cookies/
+          retention-days: 3

@@ -1,157 +1,123 @@
-# yuqd
+# 雨云自动签到
 
-基于 Selenium 和 ICR（Image Captcha Recognition）的雨云自动签到工具，通过模拟浏览器操作和高级验证码识别，实现雨云账户的自动每日签到以赚取积分。
+基于 Selenium + ICR 验证码识别的雨云每日自动签到工具，支持多账号、Cookie 缓存、代理、并发执行，可在 GitHub Actions 中定时运行。
 
 ## 功能特性
 
-- ✅ 自动完成雨云账户登录
-- ✅ 使用 ICR 模块进行验证码自动识别（旋转分析+模板匹配）
-- ✅ 支持自定义随机延时（5-20秒），避免被系统识别为自动化脚本
-- ✅ 支持在本地环境和 GitHub Actions 中运行
-- ✅ 集成 webdriver-manager 自动匹配 ChromeDriver
-- ✅ 详细的日志记录，便于排查问题
-- ✅ 支持多账户签到，并发处理
-- ✅ 随机浏览器指纹（User-Agent、分辨率、语言、时区）
-- ✅ Cookie 缓存功能，支持免密登录
-- ✅ 支持 7 种通知推送方式（Push+、SMTP、Bark、钉钉、飞书、Telegram、Server酱）
+- ✅ 自动完成雨云账户登录（Selenium 模拟浏览器）
+- ✅ ICR 验证码识别（旋转分析 + 模板匹配）
+- ✅ 浏览器指纹伪装（WebGL / Canvas / Audio / UA 随机化）
+- ✅ Cookie 缓存，支持 7 天免密登录
+- ✅ 多账号并发签到，随机延时避免风控
+- ✅ 失败自动重试，僵尸进程自动清理
+- ✅ GitHub Actions 定时触发 + 手动触发
+- ✅ 支持 HTTP/SOCKS5 代理
+- ✅ 7 种通知推送（Push+ / SMTP / Bark / 钉钉 / 飞书 / Telegram / Server 酱）
 
-## 技术栈
+## 环境要求
 
 - Python 3.9+
-- Selenium WebDriver 4.27+
-- ICR 验证码识别模块（旋转分析+模板匹配）
-- OpenCV 图像处理
-- Google Chrome 浏览器
+- Google Chrome 浏览器（CI 环境自动安装）
 
-## 安装步骤
-
-### 1. 环境要求
-
-- Python 3.9 或更高版本
-- Google Chrome 浏览器
-
-### 2. 克隆项目
+## 安装
 
 ```bash
 git clone https://github.com/fok777/yuqd.git
 cd yuqd
-```
-
-### 3. 安装依赖
-
-```bash
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 使用方法
+## 配置
 
-### 本地运行
-
-#### 通过环境变量配置
+### 方式一：环境变量
 
 ```bash
-# Linux/macOS
 export RAINYUN_USER="your_username"
 export RAINYUN_PASS="your_password"
-
-# 运行脚本
 python rainyun.py
 ```
 
-#### 多账户配置
-
-支持多行格式，每行一个用户名/密码，数量需匹配：
+多账号（每行一个，用户名和密码数量需匹配）：
 
 ```bash
 export RAINYUN_USER="user1\nuser2\nuser3"
 export RAINYUN_PASS="pass1\npass2\npass3"
 ```
 
-#### 通过 .env 文件配置
-
-创建 `.env` 文件：
+### 方式二：.env 文件（推荐）
 
 ```env
 RAINYUN_USER=your_username
 RAINYUN_PASS=your_password
 DEBUG=false
-HEADLESS=false
-AUTO_UPDATE=false
+HEADLESS=true
 MAX_WORKERS=2
 MAX_RETRIES=1
 ```
 
-### 使用 GitHub Actions 自动签到
+### 可选：代理配置
 
-1. Fork 本仓库
-2. 进入仓库的 `Settings` > `Secrets and variables` > `Actions`
-3. 添加以下密钥：
+```env
+PROXY_SERVER=p.webshare.io:80
+PROXY_USER=your_proxy_user
+PROXY_PASS=your_proxy_password
+```
 
-| Secret 名称 | 说明 | 必需 |
-|-------------|------|------|
-| RAINYUN_USER | 雨云用户名（支持多行） | ✅ |
-| RAINYUN_PASS | 雨云密码（支持多行） | ✅ |
+## GitHub Actions 自动签到
 
-4. 可选的通知推送配置：
+1. Fork 或克隆本仓库
+2. 进入 `Settings` → `Secrets and variables` → `Actions`
+3. 添加必填密钥：
 
-| Secret 名称 | 说明 |
-|-------------|------|
-| PUSH_PLUS_TOKEN | Push+ 用户令牌 |
-| SMTP_SERVER | SMTP 服务器地址 |
-| SMTP_EMAIL | 邮箱地址 |
-| SMTP_PASSWORD | 邮箱密码 |
-| BARK_PUSH | Bark 设备码或完整 URL |
-| DD_BOT_SECRET | 钉钉机器人密钥 |
-| DD_BOT_TOKEN | 钉钉机器人令牌 |
-| FSKEY | 飞书 Webhook 密钥 |
-| TG_BOT_TOKEN | Telegram 机器人令牌 |
-| TG_USER_ID | Telegram 用户 ID |
-| PUSH_KEY | Server 酱密钥 |
+| Secret | 说明 |
+|--------|------|
+| `RAINYUN_USER` | 雨云用户名（多行支持多账号） |
+| `RAINYUN_PASS` | 雨云密码（多行需与用户名数量匹配） |
 
-5. 工作流将每天 UTC 2 点（UTC+8 10点）自动运行，也可以手动触发
+4. 可选通知推送密钥：
 
-## 配置说明
+| Secret | 推送方式 |
+|--------|----------|
+| `PUSH_PLUS_TOKEN` | Push+ 微信推送 |
+| `SMTP_SERVER` / `SMTP_EMAIL` / `SMTP_PASSWORD` | 邮件推送 |
+| `BARK_PUSH` | Bark iOS 推送 |
+| `DD_BOT_TOKEN` / `DD_BOT_SECRET` | 钉钉机器人 |
+| `FSKEY` | 飞书 Webhook |
+| `TG_BOT_TOKEN` / `TG_USER_ID` | Telegram |
+| `PUSH_KEY` | Server 酱 |
 
-| 变量名 | 说明 | 默认值 |
-|--------|------|--------|
-| RAINYUN_USER | 雨云用户名（支持多行） | - |
-| RAINYUN_PASS | 雨云密码（支持多行） | - |
-| HEADLESS | 是否以无头模式运行 | false |
-| DEBUG | 是否启用调试模式 | false |
-| AUTO_UPDATE | 是否启用自动更新 | false |
-| MAX_WORKERS | 最大并发线程数 | 2 |
-| MAX_RETRIES | 最大重试次数 | 1 |
+5. 工作流每天 UTC 2:00（北京时间 10:00）自动运行，也可手动触发。
 
-## Cookie 缓存
+## 配置项说明
 
-- Cookie 保存在 `cookies/` 目录
-- 每个账户使用独立的 Cookie 文件（基于用户名哈希）
-- 支持 7 天免登录
-- GitHub Actions 中通过 `actions/cache` 持久化
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `RAINYUN_USER` | - | 用户名（必填） |
+| `RAINYUN_PASS` | - | 密码（必填） |
+| `HEADLESS` | `true` | 无头模式 |
+| `DEBUG` | `false` | 调试模式 |
+| `MAX_WORKERS` | `2` | 最大并发数 |
+| `MAX_RETRIES` | `1` | 最大重试次数 |
+| `MAX_DELAY` | `15` | 账号间最大延时（秒） |
+| `TIMEOUT` | `15000` | 元素等待超时（毫秒） |
 
 ## 常见问题
 
-### 验证码识别失败
+**验证码识别失败？**
+ICR 模块使用旋转分析和模板匹配，识别率较高。脚本会自动重试，多次尝试后通常能通过。
 
-ICR 模块使用旋转分析和模板匹配算法，识别率较高。脚本会自动重试，多次尝试后通常能成功通过验证。
+**ChromeDriver 版本不匹配？**
+CI 环境会自动从 Chrome for Testing 下载匹配的 ChromeDriver。本地开发可使用 `webdriver-manager` 自动管理。
 
-### Chrome 初始化失败
-
-- 确保 Chrome 和 ChromeDriver 版本匹配
-- 检查 GitHub Actions 日志中的错误信息
-- 项目已优化 Chrome 选项配置，支持 headless 模式
-
-### 多账户并发端口冲突
-
-项目已实现线程锁机制，确保 Chrome 实例按顺序初始化，避免端口冲突。
+**多账号端口冲突？**
+项目已实现线程锁机制，Chrome 实例按顺序初始化，避免端口冲突。
 
 ## 许可证
 
-本项目采用 GNU General Public License v3.0 许可证。
+GPL v3.0 — 查看 [LICENSE](LICENSE) 文件了解详情。
 
 ## 免责声明
 
 - 本工具仅用于学习和个人使用
 - 使用本工具应遵守雨云官方的用户协议和相关规定
-- 不对因使用本工具可能产生的任何后果负责
+- 作者不对因使用本工具可能产生的任何后果负责

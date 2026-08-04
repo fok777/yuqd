@@ -1,0 +1,154 @@
+name: Rainyun 自动签到
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # UTC+8 12点执行
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  sign-in:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: 设置Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: 缓存Python依赖
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-python-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-python-
+      
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # 移除Chrome浏览器缓存，因为缓存系统目录可能导致权限问题
+      # 使用webdriver-manager自动管理ChromeDriver，无需缓存
+      
+      - name: 安装Chrome和ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable curl unzip jq
+          
+          CHROME_FULL_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          CHROME_MILESTONE=$(echo "$CHROME_FULL_VERSION" | cut -d'.' -f1)
+          echo "Chrome完整版本: $CHROME_FULL_VERSION"
+          echo "Chrome里程碑版本: $CHROME_MILESTONE"
+          
+          CHROMEDRIVER_VERSION=""
+          
+          JSON_DATA=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json")
+          if [ -n "$JSON_DATA" ]; then
+            CHROMEDRIVER_VERSION=$(echo "$JSON_DATA" | jq -r --arg ver "$CHROME_FULL_VERSION" '.versions[] | select(.version == $ver) | .downloads.chromedriver[] | select(.platform == "linux64") | .url' | head -1)
+            if [ -n "$CHROMEDRIVER_VERSION" ]; then
+              echo "找到匹配的ChromeDriver下载链接"
+              curl -sS -o /tmp/chromedriver.zip "$CHROMEDRIVER_VERSION"
+              unzip -o /tmp/chromedriver.zip -d /tmp/
+              sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver 2>/dev/null || sudo mv /tmp/chromedriver /usr/local/bin/chromedriver 2>/dev/null
+              sudo chmod +x /usr/local/bin/chromedriver
+              echo "ChromeDriver安装完成: $(chromedriver --version)"
+            fi
+          fi
+          
+          if [ -z "$CHROMEDRIVER_VERSION" ]; then
+            echo "尝试使用里程碑版本查找..."
+            LATEST_VERSION=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json" | jq -r ".milestones.\"$CHROME_MILESTONE\".version" 2>/dev/null)
+            if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
+              echo "里程碑 $CHROME_MILESTONE 最新版本: $LATEST_VERSION"
+              DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${LATEST_VERSION}/linux64/chromedriver-linux64.zip"
+              echo "下载URL: $DRIVER_URL"
+              curl -sS -o /tmp/chromedriver.zip "$DRIVER_URL"
+              unzip -o /tmp/chromedriver.zip -d /tmp/
+              sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+              sudo chmod +x /usr/local/bin/chromedriver
+              echo "ChromeDriver安装完成: $(chromedriver --version)"
+            else
+              echo "无法获取ChromeDriver版本，尝试使用系统默认"
+              which chromedriver && chromedriver --version || echo "系统无默认chromedriver"
+            fi
+          fi
+      
+      - name: 确保temp目录存在
+        run: mkdir -p temp cookies
+      
+      - name: 恢复Cookie缓存
+        uses: actions/cache/restore@v3
+        with:
+          path: cookies
+          key: rainyun-cookies-${{ secrets.RAINYUN_USER }}
+          restore-keys: |
+            rainyun-cookies-
+      
+      - name: 执行签到脚本
+       # 开启debug查看完整过程
+        run: python rainyun.py
+        env:
+          # 请在GitHub仓库的Settings > Secrets and variables > Actions中设置这些密钥
+          RAINYUN_USER: ${{ secrets.RAINYUN_USER }}
+          RAINYUN_PASS: ${{ secrets.RAINYUN_PASS }}
+          # 1. Push+ 微信推送（已配置，保留）
+          PUSH_PLUS_TOKEN: ${{ secrets.PUSH_PLUS_TOKEN }}
+          PUSH_PLUS_USER: ${{ secrets.PUSH_PLUS_USER }}  # 可选：群组编码
+
+          # 2. SMTP 邮件推送（重点补充，你已配置 Secrets）
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_SSL: ${{ secrets.SMTP_SSL }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_NAME: ${{ secrets.SMTP_NAME }}
+
+          # 3. Bark（iOS 推送）- 可选配置
+          BARK_PUSH: ${{ secrets.BARK_PUSH }}  # 设备码或完整 URL
+
+          # 4. 钉钉机器人推送 - 可选配置
+          DD_BOT_SECRET: ${{ secrets.DD_BOT_SECRET }}
+          DD_BOT_TOKEN: ${{ secrets.DD_BOT_TOKEN }}
+
+          # 5. 飞书机器人推送 - 可选配置
+          FSKEY: ${{ secrets.FSKEY }}  # 飞书 Webhook 密钥
+
+          # 6. Telegram 机器人推送 - 可选配置
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+
+          # 7. Server 酱推送 - 可选配置
+          PUSH_KEY: ${{ secrets.PUSH_KEY }}  # Server 酱密钥（兼容旧版/Turbo版）
+          
+          # 设置无头模式环境变量
+          HEADLESS: "true"
+          # 启用调试日志
+          DEBUG: "false"
+          # 确保使用系统路径中的ChromeDriver
+          CHROMEDRIVER_PATH: "chromedriver"
+          # 最大并发线程数（默认2）
+          MAX_WORKERS: "2"
+          # 最大重试次数（默认1）
+          MAX_RETRIES: "1"
+      
+      - name: 保存Cookie缓存
+        uses: actions/cache/save@v3
+        if: always() && hashFiles('cookies') != ''
+        with:
+          path: cookies
+          key: rainyun-cookies-${{ secrets.RAINYUN_USER }}-${{ github.run_id }}
+      
+      - name: 清理临时文件
+        run: rm -rf temp
+        if: always()  # 即使前面步骤失败也执行清理
+
+  keepalive:
+    name: Keepalive Workflow
+    if: ${{ always() }}
+    needs: sign-in
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: liskin/gh-workflow-keepalive@v1

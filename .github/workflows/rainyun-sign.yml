@@ -1,4 +1,4 @@
-name: Rainyun 自动签到
+name: YN 自动任务
 
 on:
   schedule:

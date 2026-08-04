@@ -796,8 +796,8 @@ def run_all_accounts():
             import notify
             logger.info("正在发送通知...")
             
-            notification_title = f"雨云签到: {success_count}/{len(accounts)} 成功"
-            notification_content = f"雨云自动签到结果汇总：\n\n总账户数: {len(accounts)}\n成功账户数: {success_count}\n失败账户数: {len(accounts) - success_count}\n\n详细结果：\n"
+            notification_title = f"YN签到: {success_count}/{len(accounts)} 成功"
+            notification_content = f"YN自动签到结果汇总：\n\n总账户数: {len(accounts)}\n成功账户数: {success_count}\n失败账户数: {len(accounts) - success_count}\n\n详细结果：\n"
             
             for i, result in enumerate(final_results, 1):
                 if result:
@@ -830,7 +830,7 @@ if __name__ == "__main__":
 
     ver = "2.6 (ICR + Cookie)"
     logger.info("------------------------------------------------------------------")
-    logger.info(f"雨云自动签到工作流 v{ver}")
+    logger.info(f"YN自动签到工作流 v{ver}")
     logger.info("------------------------------------------------------------------")
     
     setup_sigchld_handler()

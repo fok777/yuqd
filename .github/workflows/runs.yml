@@ -1,0 +1,109 @@
+name: Cleanup old workflow runs
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'   # 每月 1 号 UTC 03:00 执行
+  workflow_dispatch:
+
+permissions:
+  actions: write    # 删除 workflow runs
+  contents: write   # 清理空提交需要 push
+
+jobs:
+  # ========== ① 清理旧空提交，只留最近 2 个 ==========
+  cleanup-keepalive-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # 必须拉全量历史，rebase 才完整
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 gh CLI
+        run: |
+          type gh >/dev/null 2>&1 || {
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update && sudo apt install -y gh
+          }
+
+      - name: 清理旧 keepalive 空提交
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 从旧到新列出所有 keepalive 提交
+          keepalive_commits=$(git log --oneline --grep="keepalive" --format="%H" --reverse)
+
+          commit_count=$(echo "$keepalive_commits" | grep -c . || true)
+          echo "找到 $commit_count 个 keepalive 提交"
+
+          # ✅ 只有 1 或 2 个时，完全不动，直接结束
+          if [ "$commit_count" -le 2 ]; then
+            echo "✅ 只有 $commit_count 个，不超过 2 个，无需清理"
+            exit 0
+          fi
+
+          # 除了最近 2 个，其余都要删
+          commits_to_remove=$(echo "$keepalive_commits" | head -n -2)
+          last_to_remove=$(echo "$commits_to_remove" | tail -1)
+
+          echo "将移除以下旧提交:"
+          echo "$commits_to_remove" | while read -r c; do git log --oneline -1 "$c"; done
+
+          # 把 last_to_remove 之后的提交（要保留的）rebase 到它的父提交上
+          git rebase --onto "$last_to_remove^" "$last_to_remove" || {
+            echo "❌ Rebase 冲突，中止本次清理"
+            git rebase --abort || true
+            exit 0
+          }
+
+          git push --force-with-lease origin HEAD:$GITHUB_REF_NAME
+          echo "✅ 旧空提交清理完成，已只保留最近 2 个"
+
+  # ========== ② 清理旧 workflow 运行记录，每个 workflow 只留最近 2 次 ==========
+  cleanup-workflow-runs:
+    runs-on: ubuntu-latest
+    needs: cleanup-keepalive-commits
+    steps:
+      - name: 安装 gh CLI
+        run: |
+          type gh >/dev/null 2>&1 || {
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update && sudo apt install -y gh
+          }
+
+      - name: 删除旧 runs，每个 workflow 保留最近 2 次
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          workflows=$(gh api repos/$REPO/actions/workflows --jq '.workflows[] | {id, name}')
+
+          echo "$workflows" | jq -c '.' | while read -r wf; do
+            wf_id=$(echo "$wf" | jq -r '.id')
+            wf_name=$(echo "$wf" | jq -r '.name')
+            echo "=== Processing: $wf_name ==="
+
+            runs_to_delete=$(gh api "repos/$REPO/actions/workflows/$wf_id/runs?per_page=100" \
+              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[2:] | .[].id')
+
+            count=$(echo "$runs_to_delete" | grep -c . || true)
+            if [ "$count" -eq 0 ]; then
+              echo "  ✅ 不超过2条，无需清理"
+              continue
+            fi
+
+            echo "  🗑️  将删除 $count 条旧记录"
+            echo "$runs_to_delete" | while read -r run_id; do
+              gh api -X DELETE "repos/$REPO/actions/runs/$run_id" \
+                && echo "  ✅ 已删除 run $run_id" \
+                || echo "  ❌ 删除 run $run_id 失败"
+            done
+          done
+
+          echo "🎉 全部清理完成"

@@ -1,0 +1,63 @@
+name: Keepalive
+
+# 独立文件：即使主 workflow 因闲置被禁用，本文件仍会运行并把它重新启用
+on:
+  schedule:
+    - cron: '17 4 * * *'    # UTC 04:17 = 北京 12:17（避开整点）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 2
+
+      - name: 强制启用所有被闲置禁用的Workflow
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.id)\t\(.state)\t\(.name)"' | while IFS=$'\t' read -r id state name; do
+            [ -z "$id" ] && continue
+            if [ "$state" = "disabled_inactivity" ]; then
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/enable" >/dev/null 2>&1 \
+                && echo "已重新启用: $name" || echo "启用失败: $name"
+            fi
+          done
+          exit 0
+
+      - name: 有效保活提交（PAT身份）
+        run: |
+          git config user.name "fok777"
+          git config user.email "fok777@users.noreply.github.com"
+          MSG="chore: keepalive $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
+          if git log -1 --pretty=%s | grep -q "keepalive"; then
+            git commit --allow-empty --amend -m "$MSG"
+            for i in 1 2 3; do git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}" && break; sleep 5; done
+          else
+            git commit --allow-empty -m "$MSG"
+            for i in 1 2 3; do git push origin "HEAD:${GITHUB_REF_NAME}" && break; sleep 5; done
+          fi
+          exit 0
+
+      - name: 清理旧运行记录（每个workflow保留最近5次）
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" --jq '.workflows[].id' | while read -r wf; do
+            [ -z "$wf" ] && continue
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?per_page=100&status=completed" \
+              --jq '.workflow_runs | sort_by(.created_at) | reverse | .[5:] | .[].id' | while read -r rid; do
+              [ -z "$rid" ] && continue
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$rid" >/dev/null 2>&1 && echo "已删run $rid"
+            done
+          done
+          exit 0

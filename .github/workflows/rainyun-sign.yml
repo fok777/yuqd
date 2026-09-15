@@ -2,90 +2,99 @@ name: YN 自动任务
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # UTC 02:00（北京时间 10:00）
-  workflow_dispatch:  # 允许手动触发
+    # cron 走 UTC = 北京时间 - 8h；分钟位刻意避开整点，绕开调度高峰
+    - cron: '7 16 * * *'    # 北京 00:07
+    - cron: '13 23 * * *'   # 北京 07:13
+    - cron: '23 5 * * *'    # 北京 13:23
+    - cron: '37 11 * * *'   # 北京 19:37
+  workflow_dispatch:
 
 permissions:
-  contents: write   # 允许推送空提交（保活）
+  contents: write   # PAT 推送保活提交
+  actions: write    # 清理缓存/运行记录
+
+concurrency:
+  group: yn-signin
+  cancel-in-progress: false
 
 jobs:
   sign-in:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      # 关键：用 PAT 检出，后续推送才会产生真实 push 事件（GITHUB_TOKEN 的提交不算有效活动）
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 2
+
       - name: 设置Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      
+
       - name: 缓存Python依赖
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-python-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-python-
-      
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: 安装Chrome和ChromeDriver
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable curl unzip jq
-          
-          CHROME_FULL_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          CHROME_MILESTONE=$(echo "$CHROME_FULL_VERSION" | cut -d'.' -f1)
-          echo "Chrome完整版本: $CHROME_FULL_VERSION"
-          echo "Chrome里程碑版本: $CHROME_MILESTONE"
-          
-          CHROMEDRIVER_VERSION=""
-          
-          JSON_DATA=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json")
-          if [ -n "$JSON_DATA" ]; then
-            CHROMEDRIVER_VERSION=$(echo "$JSON_DATA" | jq -r --arg ver "$CHROME_FULL_VERSION" '.versions[] | select(.version == $ver) | .downloads.chromedriver[] | select(.platform == "linux64") | .url' | head -1)
-            if [ -n "$CHROMEDRIVER_VERSION" ]; then
-              echo "找到匹配的ChromeDriver下载链接"
-              curl -sS -o /tmp/chromedriver.zip "$CHROMEDRIVER_VERSION"
-              unzip -o /tmp/chromedriver.zip -d /tmp/
+          sudo apt-get update -qq
+          sudo apt-get install -y curl unzip jq || true
+
+          CHROME_BIN_PATH=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)
+          if [ -z "$CHROME_BIN_PATH" ]; then
+            sudo apt-get install -y google-chrome-stable || true
+            CHROME_BIN_PATH=$(command -v google-chrome-stable || command -v google-chrome || true)
+          fi
+          echo "Chrome路径: ${CHROME_BIN_PATH:-未找到}"
+
+          if [ -n "$CHROME_BIN_PATH" ]; then
+            CHROME_FULL_VERSION=$("$CHROME_BIN_PATH" --version | grep -oP '\d+\.\d+\.\d+\.\d+' || true)
+            CHROME_MILESTONE=$(echo "$CHROME_FULL_VERSION" | cut -d'.' -f1)
+            echo "Chrome版本: $CHROME_FULL_VERSION (里程碑 $CHROME_MILESTONE)"
+
+            DRIVER_URL=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json" \
+              | jq -r --arg ver "$CHROME_FULL_VERSION" '.versions[] | select(.version == $ver) | .downloads.chromedriver[]? | select(.platform == "linux64") | .url' | head -1 || true)
+
+            if [ -z "$DRIVER_URL" ] && [ -n "$CHROME_MILESTONE" ]; then
+              LATEST_VERSION=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json" \
+                | jq -r ".milestones.\"$CHROME_MILESTONE\".version" || true)
+              if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
+                DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${LATEST_VERSION}/linux64/chromedriver-linux64.zip"
+              fi
+            fi
+
+            if [ -n "$DRIVER_URL" ]; then
+              curl -sS -o /tmp/chromedriver.zip "$DRIVER_URL" || true
+              unzip -o /tmp/chromedriver.zip -d /tmp/ || true
               sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver 2>/dev/null || sudo mv /tmp/chromedriver /usr/local/bin/chromedriver 2>/dev/null
-              sudo chmod +x /usr/local/bin/chromedriver
-              echo "ChromeDriver安装完成: $(chromedriver --version)"
+              sudo chmod +x /usr/local/bin/chromedriver 2>/dev/null
+              chromedriver --version || true
             fi
           fi
-          
-          if [ -z "$CHROMEDRIVER_VERSION" ]; then
-            echo "尝试使用里程碑版本查找..."
-            LATEST_VERSION=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json" | jq -r ".milestones.\"$CHROME_MILESTONE\".version" 2>/dev/null)
-            if [ -n "$LATEST_VERSION" ] && [ "$LATEST_VERSION" != "null" ]; then
-              echo "里程碑 $CHROME_MILESTONE 最新版本: $LATEST_VERSION"
-              DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${LATEST_VERSION}/linux64/chromedriver-linux64.zip"
-              echo "下载URL: $DRIVER_URL"
-              curl -sS -o /tmp/chromedriver.zip "$DRIVER_URL"
-              unzip -o /tmp/chromedriver.zip -d /tmp/
-              sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-              sudo chmod +x /usr/local/bin/chromedriver
-              echo "ChromeDriver安装完成: $(chromedriver --version)"
-            else
-              echo "无法获取ChromeDriver版本，尝试使用系统默认"
-              which chromedriver && chromedriver --version || echo "系统无默认chromedriver"
-            fi
-          fi
-      
+          exit 0
+
       - name: 确保temp目录存在
         run: mkdir -p temp cookies
-      
+
       - name: 恢复Cookie缓存
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: cookies
           key: rainyun-cookies-${{ secrets.RAINYUN_USER }}
           restore-keys: |
             rainyun-cookies-
-      
+
       - name: 执行签到脚本
         run: python rainyun.py
         env:
@@ -110,33 +119,66 @@ jobs:
           CHROMEDRIVER_PATH: "chromedriver"
           MAX_WORKERS: "2"
           MAX_RETRIES: "1"
-      
+
       - name: 保存Cookie缓存
-        uses: actions/cache/save@v3
         if: always() && hashFiles('cookies') != ''
+        uses: actions/cache/save@v4
         with:
           path: cookies
           key: rainyun-cookies-${{ secrets.RAINYUN_USER }}-${{ github.run_id }}
-      
-      - name: 清理临时文件
-        run: rm -rf temp
+
+      # 全局清缓存，只保留最新 1 个（= 刚保存的 cookie 缓存）
+      - name: 清理Actions缓存（仅保留最新1个）
         if: always()
-
-      # ========== 保活：制造仓库活动，防止 GitHub 闲置禁用 schedule ==========
-      - name: Keep repo active (空提交)
-        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "chore: keepalive $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | "\(.created_at)\t\(.id)\t\(.key)"' \
+            | sort -r > /tmp/cl.tsv || true
+          TOTAL=$(wc -l < /tmp/cl.tsv | tr -d ' ')
+          echo "缓存总数: $TOTAL，保留最新 1 个"
+          head -n 1 /tmp/cl.tsv
+          if [ "$TOTAL" -gt 1 ]; then
+            tail -n +2 /tmp/cl.tsv | while IFS=$'\t' read -r ts id key; do
+              [ -z "$id" ] && continue
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" >/dev/null 2>&1 \
+                && echo "已删缓存: $key" || echo "跳过(使用中): $key"
+            done
+          fi
+          exit 0
 
-  keepalive:
-    name: Keepalive Workflow
-    if: ${{ always() }}
-    needs: sign-in
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: liskin/gh-workflow-keepalive@v1
+      - name: 清理临时文件
+        if: always()
+        run: rm -rf temp
+
+      # PAT 才有权限重新启用被闲置禁用的 workflow；GITHUB_TOKEN 做不到
+      - name: 强制启用被闲置禁用的Workflow
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id' | while read -r id; do
+            [ -z "$id" ] && continue
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/enable" >/dev/null 2>&1 \
+              && echo "已重新启用 workflow $id"
+          done
+          exit 0
+
+      # ========== 有效保活：PAT 身份推送，才算真实仓库活动 ==========
+      - name: Keep repo active (空提交)
+        if: always()          # 签到失败也要保活
+        run: |
+          git config user.name "fok777"
+          git config user.email "fok777@users.noreply.github.com"
+          MSG="chore: keepalive $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
+          # 上一条若已是 keepalive，直接 amend 覆盖，历史里永远只多 1 个提交
+          if git log -1 --pretty=%s | grep -q "keepalive"; then
+            git commit --allow-empty --amend -m "$MSG"
+            for i in 1 2 3; do git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}" && break; sleep 5; done
+          else
+            git commit --allow-empty -m "$MSG"
+            for i in 1 2 3; do git push origin "HEAD:${GITHUB_REF_NAME}" && break; sleep 5; done
+          fi
+          exit 0

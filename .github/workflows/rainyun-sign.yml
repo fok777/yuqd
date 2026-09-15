@@ -28,6 +28,22 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 2
 
+      # 自愈：照搬 MT 仓库 checkin.yml 的 "Check permissions" 步骤
+      # 每次运行先把本仓库所有 workflow 强制启用，防止被闲置规则禁用后彻底停摆
+      - name: Check permissions (强制启用所有Workflow)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.id)\t\(.state)\t\(.name)"' | while IFS=$'\t' read -r id state name; do
+            [ -z "$id" ] && continue
+            if [ "$state" != "active" ]; then
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/enable" >/dev/null 2>&1 \
+                && echo "已重新启用: $name" || echo "启用失败: $name"
+            fi
+          done
+          exit 0
+
       - name: 设置Python
         uses: actions/setup-python@v5
         with:

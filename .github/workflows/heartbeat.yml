@@ -16,16 +16,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # 不指定 token => 使用 GITHUB_TOKEN（MT 仓库同款，永不过期）
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
           fetch-depth: 1
 
       # 自愈核心：把本仓库所有被闲置禁用的 workflow 重新启用
       # MT 仓库 checkin.yml 里的"Check permissions"就是这一步，是它从不断的真正原因
       - name: 强制启用所有被禁用的Workflow
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows" \
             --jq '.workflows[] | "\(.id)\t\(.state)\t\(.name)"' | while IFS=$'\t' read -r id state name; do
@@ -47,8 +47,8 @@ jobs:
 
       - name: 提交心跳
         run: |
-          git config user.name "fok777"
-          git config user.email "fok777@users.noreply.github.com"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
           git add .heartbeat/last.txt
           if git diff --cached --quiet; then
             echo "无变化，跳过提交"; exit 0
